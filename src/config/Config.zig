@@ -2221,24 +2221,18 @@ keybind: Keybinds = .{},
 /// Available since 1.0.0
 @"resize-overlay-duration": Duration = .{ .duration = 750 * std.time.ns_per_ms },
 
-/// Widgets for the status bar overlay. This is a repeatable configuration.
+/// Widgets for the status bar. This is a repeatable configuration.
 ///
 /// The format is `kind[:param=value,...]`. Supported kinds are:
 ///   - `time`
 ///   - `cwd`
-///   - `pwd`
 ///   - `size`
-///   - `modifiers`
-///   - `pending_key`
-///   - `cpu`
-///   - `memory`
-///   - `cursor_pos` (not yet implemented)
+///   - `title`
 ///
 /// Supported params:
 ///   - `name`   : the widget identifier used in `status-bar`
 ///   - `format` : a strftime format string (only for `time`)
 ///   - `style`  : the style name used in `status-bar-style`
-///   - `style-range` : the range name used in `status-bar-style-range`
 ///
 /// Example: `status-bar-widget = time:format=%H:%M,name=clock`
 @"status-bar-widget": RepeatableStatusBarWidget = .{},
@@ -2254,24 +2248,27 @@ keybind: Keybinds = .{},
 /// Example: `status-bar-style = name=alert,fg=#ff6b6b,bold=true`
 @"status-bar-style": RepeatableStatusBarStyle = .{},
 
-/// Range styles for status bar widgets. This is a repeatable configuration.
+/// Layout for the status bar. Use widget names separated by whitespace.
+/// Use `<->` to split the layout into left, center, and right sections.
 ///
-/// The format is `name=<name>,range=<min>..<max>=<style>,...`. Supported params:
-///   - `name`  : required range name
-///   - `range` : a numeric range mapped to a style name
-///
-/// Ranges are inclusive and evaluated in order. Use an empty min or max to
-/// indicate an open range. A single number is treated as an exact match.
-///
-/// Example:
-///   `status-bar-style-range = name=cpu,range=0..40=ok,range=40..80=warn,range=80..=hot`
-@"status-bar-style-range": RepeatableStatusBarStyleRange = .{},
+/// Example: `status-bar = time <-> cwd <-> size`
+@"status-bar": [:0]const u8 = "<-> cwd <->",
 
-/// Layout for the status bar overlay. Use widget names separated by whitespace.
-/// Use `<->` to split the layout into left and right sections.
+/// Position of the status bar within a surface.
+/// The possible options are:
 ///
-/// Example: `status-bar = time <-> cwd`
-@"status-bar": [:0]const u8 = "cwd",
+///   * `top`
+///   * `bottom`
+///
+/// The default is `bottom`.
+@"status-bar-position": StatusBarPosition = .bottom,
+
+/// Tint overlay for the status bar background.
+///
+/// The tint uses the current theme foreground color. A value of `0` disables
+/// the overlay. Values outside the range 0 to 1 are clamped to the nearest
+/// valid value.
+@"status-bar-tint-opacity": f64 = 0.0,
 
 /// If true, when there are multiple split panes, the mouse selects the pane
 /// that is focused. This only applies to the currently focused window; e.g.
@@ -4506,6 +4503,9 @@ pub fn finalize(self: *Config) !void {
 
     // Clamp our split opacity
     self.@"unfocused-split-opacity" = @min(1.0, @max(0.15, self.@"unfocused-split-opacity"));
+
+    // Clamp our status bar tint overlay opacity
+    self.@"status-bar-tint-opacity" = std.math.clamp(self.@"status-bar-tint-opacity", 0.0, 1.0);
 
     // Clamp our contrast
     self.@"minimum-contrast" = @min(21, @max(1, self.@"minimum-contrast"));
@@ -8388,20 +8388,14 @@ pub const StatusBarWidget = struct {
     pub const Kind = enum(c_int) {
         time,
         cwd,
-        pwd,
         size,
-        modifiers,
-        pending_key,
-        cpu,
-        memory,
-        cursor_pos,
+        title,
     };
 
     kind: Kind,
     name: ?[:0]const u8 = null,
     format: ?[:0]const u8 = null,
     style: ?[:0]const u8 = null,
-    style_range: ?[:0]const u8 = null,
 
     /// C representation for status bar widgets.
     pub const C = extern struct {
@@ -8409,7 +8403,6 @@ pub const StatusBarWidget = struct {
         name: ?[*:0]const u8,
         format: ?[*:0]const u8,
         style: ?[*:0]const u8,
-        style_range: ?[*:0]const u8,
     };
 
     pub fn cval(self: Self) C {
@@ -8418,7 +8411,6 @@ pub const StatusBarWidget = struct {
             .name = if (self.name) |v| @ptrCast(v.ptr) else null,
             .format = if (self.format) |v| @ptrCast(v.ptr) else null,
             .style = if (self.style) |v| @ptrCast(v.ptr) else null,
-            .style_range = if (self.style_range) |v| @ptrCast(v.ptr) else null,
         };
     }
 
@@ -8428,7 +8420,6 @@ pub const StatusBarWidget = struct {
             .name = if (self.name) |v| try alloc.dupeZ(u8, v) else null,
             .format = if (self.format) |v| try alloc.dupeZ(u8, v) else null,
             .style = if (self.style) |v| try alloc.dupeZ(u8, v) else null,
-            .style_range = if (self.style_range) |v| try alloc.dupeZ(u8, v) else null,
         };
     }
 
@@ -8437,7 +8428,6 @@ pub const StatusBarWidget = struct {
         if (!stringOptEqual(self.name, other.name)) return false;
         if (!stringOptEqual(self.format, other.format)) return false;
         if (!stringOptEqual(self.style, other.style)) return false;
-        if (!stringOptEqual(self.style_range, other.style_range)) return false;
         return true;
     }
 
@@ -8487,8 +8477,6 @@ pub const StatusBarWidget = struct {
                     result.format = try alloc.dupeZ(u8, value);
                 } else if (std.mem.eql(u8, key, "style")) {
                     result.style = try alloc.dupeZ(u8, value);
-                } else if (std.mem.eql(u8, key, "style-range") or std.mem.eql(u8, key, "style_range")) {
-                    result.style_range = try alloc.dupeZ(u8, value);
                 } else {
                     return error.InvalidValue;
                 }
@@ -8525,57 +8513,10 @@ pub const StatusBarWidget = struct {
             });
             first = false;
         }
-
-        if (self.style_range) |style_range| {
-            try writer.print("{s}style-range:\"{f}\"", .{
-                if (first) ":" else ",",
-                std.zig.fmtString(style_range),
-            });
-            first = false;
-        }
     }
 
     pub fn parseKind(input: []const u8) ?Kind {
-        if (std.mem.eql(u8, input, "modifier_state")) return .modifiers;
-        if (std.mem.eql(u8, input, "mods")) return .modifiers;
-        if (std.mem.eql(u8, input, "terminal_size")) return .size;
-        if (std.mem.eql(u8, input, "term_size")) return .size;
-        if (std.mem.eql(u8, input, "mem")) return .memory;
         return std.meta.stringToEnum(Kind, input);
-    }
-
-    test "StatusBarWidget parseCLI style-range" {
-        const testing = std.testing;
-        var arena = ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var widget: StatusBarWidget = undefined;
-        try widget.parseCLI(alloc, "cpu:name=cpu,style-range=cpu_range,style=hot");
-
-        try testing.expectEqual(Kind.cpu, widget.kind);
-        try testing.expectEqualStrings("cpu", std.mem.sliceTo(widget.name.?, 0));
-        try testing.expectEqualStrings("cpu_range", std.mem.sliceTo(widget.style_range.?, 0));
-        try testing.expectEqualStrings("hot", std.mem.sliceTo(widget.style.?, 0));
-
-        var widget_alias: StatusBarWidget = undefined;
-        try widget_alias.parseCLI(alloc, "cpu:style_range=alt");
-        try testing.expectEqualStrings("alt", std.mem.sliceTo(widget_alias.style_range.?, 0));
-    }
-
-    test "StatusBarWidget formatEntry style-range" {
-        const testing = std.testing;
-        var arena = ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var widget: StatusBarWidget = undefined;
-        try widget.parseCLI(alloc, "cpu:style_range=cpu_range");
-
-        var buf: [128]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buf);
-        try widget.formatEntry(&writer);
-        try testing.expectEqualSlices(u8, "cpu:style-range:\"cpu_range\"", writer.buffered());
     }
 
     test "StatusBarWidget parseCLI invalid key" {
@@ -8585,7 +8526,7 @@ pub const StatusBarWidget = struct {
         const alloc = arena.allocator();
 
         var widget: StatusBarWidget = undefined;
-        try testing.expectError(error.InvalidValue, widget.parseCLI(alloc, "cpu:bogus=1"));
+        try testing.expectError(error.InvalidValue, widget.parseCLI(alloc, "time:bogus=1"));
     }
 };
 
@@ -8914,410 +8855,6 @@ pub const RepeatableStatusBarStyle = struct {
     }
 };
 
-/// A single status bar style range entry.
-pub const StatusBarStyleRangeEntry = struct {
-    const Self = @This();
-
-    min: ?f32 = null,
-    max: ?f32 = null,
-    style: [:0]const u8,
-
-    /// C representation for status bar style range entries.
-    pub const C = extern struct {
-        min: f32,
-        has_min: bool,
-        max: f32,
-        has_max: bool,
-        style: [*:0]const u8,
-    };
-
-    pub fn cval(self: Self) C {
-        return .{
-            .min = self.min orelse 0,
-            .has_min = self.min != null,
-            .max = self.max orelse 0,
-            .has_max = self.max != null,
-            .style = @ptrCast(self.style.ptr),
-        };
-    }
-
-    pub fn clone(self: *const Self, alloc: Allocator) Allocator.Error!Self {
-        return .{
-            .min = self.min,
-            .max = self.max,
-            .style = try alloc.dupeZ(u8, self.style),
-        };
-    }
-
-    pub fn equal(self: Self, other: Self) bool {
-        if (self.min != other.min) return false;
-        if (self.max != other.max) return false;
-        if (!std.mem.eql(u8, self.style, other.style)) return false;
-        return true;
-    }
-
-    pub fn matches(self: Self, value: f32) bool {
-        if (self.min) |min| {
-            if (value < min) return false;
-        }
-        if (self.max) |max| {
-            if (value > max) return false;
-        }
-        return self.min != null or self.max != null;
-    }
-};
-
-/// A single status bar style range definition.
-pub const StatusBarStyleRange = struct {
-    const Self = @This();
-
-    name: [:0]const u8,
-    entries: std.ArrayListUnmanaged(StatusBarStyleRangeEntry) = .empty,
-    entries_c: std.ArrayListUnmanaged(StatusBarStyleRangeEntry.C) = .empty,
-
-    /// C representation for status bar style ranges.
-    pub const C = extern struct {
-        name: [*:0]const u8,
-        entries: [*]StatusBarStyleRangeEntry.C,
-        len: usize,
-    };
-
-    pub fn cval(self: *const Self) C {
-        return .{
-            .name = @ptrCast(self.name.ptr),
-            .entries = self.entries_c.items.ptr,
-            .len = self.entries_c.items.len,
-        };
-    }
-
-    pub fn clone(self: *const Self, alloc: Allocator) Allocator.Error!Self {
-        var entries = try std.ArrayListUnmanaged(StatusBarStyleRangeEntry).initCapacity(
-            alloc,
-            self.entries.items.len,
-        );
-        var entries_c = try std.ArrayListUnmanaged(StatusBarStyleRangeEntry.C).initCapacity(
-            alloc,
-            self.entries.items.len,
-        );
-        errdefer {
-            entries.deinit(alloc);
-            entries_c.deinit(alloc);
-        }
-
-        for (self.entries.items) |entry| {
-            const cloned = try entry.clone(alloc);
-            entries.appendAssumeCapacity(cloned);
-            entries_c.appendAssumeCapacity(cloned.cval());
-        }
-
-        return .{
-            .name = try alloc.dupeZ(u8, self.name),
-            .entries = entries,
-            .entries_c = entries_c,
-        };
-    }
-
-    pub fn equal(self: Self, other: Self) bool {
-        if (!std.mem.eql(u8, self.name, other.name)) return false;
-        if (self.entries.items.len != other.entries.items.len) return false;
-        for (self.entries.items, other.entries.items) |a, b| {
-            if (!a.equal(b)) return false;
-        }
-        return true;
-    }
-
-    pub fn styleForValue(self: Self, value: f32) ?[]const u8 {
-        for (self.entries.items) |entry| {
-            if (entry.matches(value)) return std.mem.sliceTo(entry.style, 0);
-        }
-        return null;
-    }
-
-    pub fn parseCLI(self: *Self, alloc: Allocator, input: ?[]const u8) !void {
-        const raw = input orelse return error.ValueRequired;
-        const trimmed = std.mem.trim(u8, raw, cli.args.whitespace);
-        if (trimmed.len == 0) return error.ValueRequired;
-
-        var result: StatusBarStyleRange = .{ .name = "" };
-
-        var iter: CommaSplitter = .init(trimmed);
-        while (iter.next() catch return error.InvalidValue) |entry_raw| {
-            const entry = std.mem.trim(u8, entry_raw, cli.args.whitespace);
-            if (entry.len == 0) continue;
-
-            const eq_idx = std.mem.indexOfScalar(u8, entry, '=') orelse return error.InvalidValue;
-            const key = std.mem.trim(u8, entry[0..eq_idx], cli.args.whitespace);
-            const value_raw = std.mem.trim(u8, entry[eq_idx + 1 ..], cli.args.whitespace);
-
-            // Decode quoted strings if necessary.
-            var buf: std.Io.Writer.Allocating = .init(alloc);
-            defer buf.deinit();
-            const value = value: {
-                if (value_raw.len >= 2 and value_raw[0] == '"' and value_raw[value_raw.len - 1] == '"') {
-                    const parsed = try std.zig.string_literal.parseWrite(&buf.writer, value_raw);
-                    if (parsed == .failure) return error.InvalidValue;
-                    break :value buf.written();
-                }
-                break :value value_raw;
-            };
-
-            if (std.mem.eql(u8, key, "name")) {
-                result.name = try alloc.dupeZ(u8, value);
-            } else if (std.mem.eql(u8, key, "range")) {
-                try result.entries.ensureUnusedCapacity(alloc, 1);
-                try result.entries_c.ensureUnusedCapacity(alloc, 1);
-                const entry_parsed = try parseRangeEntry(alloc, value);
-                result.entries.appendAssumeCapacity(entry_parsed);
-                result.entries_c.appendAssumeCapacity(entry_parsed.cval());
-            } else {
-                return error.InvalidValue;
-            }
-        }
-
-        if (result.name.len == 0) return error.InvalidValue;
-        if (result.entries.items.len == 0) return error.InvalidValue;
-        self.* = result;
-    }
-
-    pub fn formatEntry(self: Self, writer: *std.Io.Writer) !void {
-        var first = true;
-
-        try writer.print("{s}name:\"{f}\"", .{
-            if (first) "" else ",",
-            std.zig.fmtString(self.name),
-        });
-        first = false;
-
-        for (self.entries.items) |entry| {
-            try writer.writeAll(if (first) "" else ",");
-            try writer.writeAll("range=");
-            if (entry.min) |min| {
-                try writer.print("{d}", .{min});
-            }
-            if (entry.min == null or entry.max == null or entry.min.? != entry.max.?) {
-                try writer.writeAll("..");
-                if (entry.max) |max| {
-                    try writer.print("{d}", .{max});
-                }
-            }
-            try writer.print("=\"{f}\"", .{
-                std.zig.fmtString(entry.style),
-            });
-            first = false;
-        }
-    }
-
-    fn parseRangeEntry(alloc: Allocator, raw: []const u8) !StatusBarStyleRangeEntry {
-        const trimmed = std.mem.trim(u8, raw, cli.args.whitespace);
-        if (trimmed.len == 0) return error.InvalidValue;
-
-        const eq_idx = std.mem.lastIndexOfScalar(u8, trimmed, '=') orelse return error.InvalidValue;
-        const range_raw = std.mem.trim(u8, trimmed[0..eq_idx], cli.args.whitespace);
-        const style_raw = std.mem.trim(u8, trimmed[eq_idx + 1 ..], cli.args.whitespace);
-        if (style_raw.len == 0) return error.InvalidValue;
-
-        var min: ?f32 = null;
-        var max: ?f32 = null;
-
-        if (std.mem.indexOf(u8, range_raw, "..")) |dots| {
-            if (std.mem.indexOf(u8, range_raw[dots + 2 ..], "..") != null) {
-                return error.InvalidValue;
-            }
-            const left = std.mem.trim(u8, range_raw[0..dots], cli.args.whitespace);
-            const right = std.mem.trim(u8, range_raw[dots + 2 ..], cli.args.whitespace);
-            if (left.len > 0) {
-                min = std.fmt.parseFloat(f32, left) catch return error.InvalidValue;
-            }
-            if (right.len > 0) {
-                max = std.fmt.parseFloat(f32, right) catch return error.InvalidValue;
-            }
-        } else {
-            if (range_raw.len == 0) return error.InvalidValue;
-            const value = std.fmt.parseFloat(f32, range_raw) catch return error.InvalidValue;
-            min = value;
-            max = value;
-        }
-
-        if (min == null and max == null) return error.InvalidValue;
-        if (min != null and max != null and min.? > max.?) return error.InvalidValue;
-
-        return .{
-            .min = min,
-            .max = max,
-            .style = try alloc.dupeZ(u8, style_raw),
-        };
-    }
-
-    test "StatusBarStyleRange parseCLI and match" {
-        const testing = std.testing;
-        var arena = ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var range: StatusBarStyleRange = undefined;
-        try range.parseCLI(alloc, "name=cpu,range=0..40=ok,range=40..80=warn,range=80..=hot");
-
-        try testing.expectEqualStrings("cpu", range.name);
-        try testing.expectEqual(@as(usize, 3), range.entries.items.len);
-
-        const first = range.entries.items[0];
-        try testing.expectEqual(@as(f32, 0), first.min.?);
-        try testing.expectEqual(@as(f32, 40), first.max.?);
-        try testing.expectEqualStrings("ok", first.style);
-
-        const second = range.entries.items[1];
-        try testing.expectEqual(@as(f32, 40), second.min.?);
-        try testing.expectEqual(@as(f32, 80), second.max.?);
-        try testing.expectEqualStrings("warn", second.style);
-
-        const third = range.entries.items[2];
-        try testing.expectEqual(@as(f32, 80), third.min.?);
-        try testing.expect(third.max == null);
-        try testing.expectEqualStrings("hot", third.style);
-
-        try testing.expect(range.styleForValue(-1) == null);
-        try testing.expectEqualStrings("ok", range.styleForValue(0).?);
-        try testing.expectEqualStrings("ok", range.styleForValue(40).?);
-        try testing.expectEqualStrings("warn", range.styleForValue(41).?);
-        try testing.expectEqualStrings("hot", range.styleForValue(99).?);
-    }
-
-    test "StatusBarStyleRange parseCLI invalid" {
-        const testing = std.testing;
-        var arena = ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var range: StatusBarStyleRange = undefined;
-        try testing.expectError(error.InvalidValue, range.parseCLI(alloc, "name=cpu,range=80..40=bad"));
-        try testing.expectError(error.InvalidValue, range.parseCLI(alloc, "name=cpu,range=..=bad"));
-        try testing.expectError(error.InvalidValue, range.parseCLI(alloc, "name=cpu,range=0..40="));
-        try testing.expectError(error.InvalidValue, range.parseCLI(alloc, "range=0..40=ok"));
-    }
-};
-
-/// Repeatable list of status bar style ranges.
-pub const RepeatableStatusBarStyleRange = struct {
-    const Self = @This();
-
-    value: std.ArrayListUnmanaged(StatusBarStyleRange) = .empty,
-    value_c: std.ArrayListUnmanaged(StatusBarStyleRange.C) = .empty,
-
-    /// ghostty_config_status_bar_style_range_list_s
-    pub const C = extern struct {
-        ranges: [*]StatusBarStyleRange.C,
-        len: usize,
-    };
-
-    pub fn cval(self: *const Self) C {
-        return .{
-            .ranges = self.value_c.items.ptr,
-            .len = self.value_c.items.len,
-        };
-    }
-
-    pub fn parseCLI(
-        self: *Self,
-        alloc: Allocator,
-        input_: ?[]const u8,
-    ) !void {
-        const input = input_ orelse return error.ValueRequired;
-
-        if (input.len == 0) {
-            self.value.clearRetainingCapacity();
-            self.value_c.clearRetainingCapacity();
-            return;
-        }
-
-        try self.value.ensureUnusedCapacity(alloc, 1);
-        try self.value_c.ensureUnusedCapacity(alloc, 1);
-
-        var range: StatusBarStyleRange = undefined;
-        try range.parseCLI(alloc, input);
-
-        self.value.appendAssumeCapacity(range);
-        self.value_c.appendAssumeCapacity(range.cval());
-    }
-
-    pub fn clone(self: *const Self, alloc: Allocator) Allocator.Error!Self {
-        var value = try std.ArrayListUnmanaged(StatusBarStyleRange).initCapacity(
-            alloc,
-            self.value.items.len,
-        );
-        var value_c = try std.ArrayListUnmanaged(StatusBarStyleRange.C).initCapacity(
-            alloc,
-            self.value_c.items.len,
-        );
-        errdefer {
-            value.deinit(alloc);
-            value_c.deinit(alloc);
-        }
-
-        for (self.value.items) |item| {
-            const cloned = try item.clone(alloc);
-            value.appendAssumeCapacity(cloned);
-            value_c.appendAssumeCapacity(cloned.cval());
-        }
-
-        return .{
-            .value = value,
-            .value_c = value_c,
-        };
-    }
-
-    pub fn equal(self: Self, other: Self) bool {
-        if (self.value.items.len != other.value.items.len) return false;
-        for (self.value.items, other.value.items) |a, b| {
-            if (!a.equal(b)) return false;
-        }
-        return true;
-    }
-
-    pub fn formatEntry(self: Self, formatter: formatterpkg.EntryFormatter) !void {
-        if (self.value.items.len == 0) {
-            try formatter.formatEntry(void, {});
-            return;
-        }
-
-        for (self.value.items) |item| {
-            var buf: [512]u8 = undefined;
-            var writer: std.Io.Writer = .fixed(&buf);
-
-            item.formatEntry(&writer) catch return error.OutOfMemory;
-            try formatter.formatEntry([]const u8, writer.buffered());
-        }
-    }
-
-    test "RepeatableStatusBarStyleRange parseCLI cval" {
-        const testing = std.testing;
-        var arena = ArenaAllocator.init(testing.allocator);
-        defer arena.deinit();
-        const alloc = arena.allocator();
-
-        var list: RepeatableStatusBarStyleRange = .{};
-        try list.parseCLI(alloc, "name=cpu,range=0..=ok");
-        try list.parseCLI(alloc, "name=mem,range=0..50=ok,range=50..=warn");
-
-        try testing.expectEqual(@as(usize, 2), list.value.items.len);
-        try testing.expectEqual(@as(usize, 2), list.value_c.items.len);
-
-        const cv = list.cval();
-        try testing.expectEqual(@as(usize, 2), cv.len);
-
-        try testing.expectEqualStrings("cpu", std.mem.sliceTo(cv.ranges[0].name, 0));
-        try testing.expectEqual(@as(usize, 1), cv.ranges[0].len);
-        try testing.expectEqualStrings("ok", std.mem.sliceTo(cv.ranges[0].entries[0].style, 0));
-
-        try testing.expectEqualStrings("mem", std.mem.sliceTo(cv.ranges[1].name, 0));
-        try testing.expectEqual(@as(usize, 2), cv.ranges[1].len);
-        try testing.expectEqualStrings("ok", std.mem.sliceTo(cv.ranges[1].entries[0].style, 0));
-        try testing.expectEqualStrings("warn", std.mem.sliceTo(cv.ranges[1].entries[1].style, 0));
-
-        try list.parseCLI(alloc, "");
-        try testing.expectEqual(@as(usize, 0), list.cval().len);
-    }
-};
-
 /// OSC 4, 10, 11, and 12 default color reporting format.
 pub const OSCColorReportFormat = enum {
     none,
@@ -9611,6 +9148,12 @@ pub const ResizeOverlayPosition = enum {
     @"bottom-left",
     @"bottom-center",
     @"bottom-right",
+};
+
+/// See status-bar-position
+pub const StatusBarPosition = enum {
+    top,
+    bottom,
 };
 
 /// See quick-terminal-position

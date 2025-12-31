@@ -478,13 +478,8 @@ typedef struct {
 typedef enum {
   GHOSTTY_STATUS_BAR_WIDGET_TIME,
   GHOSTTY_STATUS_BAR_WIDGET_CWD,
-  GHOSTTY_STATUS_BAR_WIDGET_PWD,
   GHOSTTY_STATUS_BAR_WIDGET_SIZE,
-  GHOSTTY_STATUS_BAR_WIDGET_MODIFIERS,
-  GHOSTTY_STATUS_BAR_WIDGET_PENDING_KEY,
-  GHOSTTY_STATUS_BAR_WIDGET_CPU,
-  GHOSTTY_STATUS_BAR_WIDGET_MEMORY,
-  GHOSTTY_STATUS_BAR_WIDGET_CURSOR_POS,
+  GHOSTTY_STATUS_BAR_WIDGET_TITLE,
 } ghostty_status_bar_widget_kind_e;
 
 typedef struct {
@@ -492,7 +487,6 @@ typedef struct {
   const char* name;
   const char* format;
   const char* style;
-  const char* style_range;
 } ghostty_status_bar_widget_s;
 
 typedef struct {
@@ -515,27 +509,6 @@ typedef struct {
   const ghostty_status_bar_style_s* styles;
   size_t len;
 } ghostty_config_status_bar_style_list_s;
-
-// config.StatusBarStyleRangeEntry
-typedef struct {
-  float min;
-  bool has_min;
-  float max;
-  bool has_max;
-  const char* style;
-} ghostty_status_bar_style_range_entry_s;
-
-// config.StatusBarStyleRange
-typedef struct {
-  const char* name;
-  const ghostty_status_bar_style_range_entry_s* entries;
-  size_t len;
-} ghostty_status_bar_style_range_s;
-
-typedef struct {
-  const ghostty_status_bar_style_range_s* ranges;
-  size_t len;
-} ghostty_config_status_bar_style_range_list_s;
 
 // config.Palette
 typedef struct {

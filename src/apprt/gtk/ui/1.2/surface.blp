@@ -12,64 +12,71 @@ Adw.StatusPage error_page {
   };
 }
 
-Overlay terminal_page {
-  focusable: false;
-  focus-on-click: false;
+Box status_bar_container {
+  orientation: vertical;
+  hexpand: true;
+  vexpand: true;
 
-  child: Box {
+  Overlay terminal_page {
+    focusable: false;
+    focus-on-click: false;
     hexpand: true;
     vexpand: true;
 
-    GLArea gl_area {
-      realize => $gl_realize();
-      unrealize => $gl_unrealize();
-      render => $gl_render();
-      resize => $gl_resize();
+    child: Box {
       hexpand: true;
       vexpand: true;
-      focusable: true;
-      focus-on-click: true;
-      has-stencil-buffer: false;
-      has-depth-buffer: false;
-      allowed-apis: gl;
-    }
 
-    PopoverMenu context_menu {
-      closed => $context_menu_closed();
-      menu-model: context_menu_model;
-      flags: nested;
-      halign: start;
-      has-arrow: false;
-    }
+      GLArea gl_area {
+        realize => $gl_realize();
+        unrealize => $gl_unrealize();
+        render => $gl_render();
+        resize => $gl_resize();
+        hexpand: true;
+        vexpand: true;
+        focusable: true;
+        focus-on-click: true;
+        has-stencil-buffer: false;
+        has-depth-buffer: false;
+        allowed-apis: gl;
+      }
 
-    EventControllerFocus {
-      enter => $focus_enter();
-      leave => $focus_leave();
-    }
+      PopoverMenu context_menu {
+        closed => $context_menu_closed();
+        menu-model: context_menu_model;
+        flags: nested;
+        halign: start;
+        has-arrow: false;
+      }
 
-    EventControllerKey {
-      key-pressed => $key_pressed();
-      key-released => $key_released();
-    }
+      EventControllerFocus {
+        enter => $focus_enter();
+        leave => $focus_leave();
+      }
 
-    EventControllerScroll {
-      scroll => $scroll();
-      scroll-begin => $scroll_begin();
-      scroll-end => $scroll_end();
-      flags: both_axes;
-    }
+      EventControllerKey {
+        key-pressed => $key_pressed();
+        key-released => $key_released();
+      }
 
-    EventControllerMotion {
-      motion => $mouse_motion();
-      leave => $mouse_leave();
-    }
+      EventControllerScroll {
+        scroll => $scroll();
+        scroll-begin => $scroll_begin();
+        scroll-end => $scroll_end();
+        flags: both_axes;
+      }
 
-    GestureClick {
-      pressed => $mouse_down();
-      released => $mouse_up();
-      button: 0;
-    }
-  };
+      EventControllerMotion {
+        motion => $mouse_motion();
+        leave => $mouse_leave();
+      }
+
+      GestureClick {
+        pressed => $mouse_down();
+        released => $mouse_up();
+        button: 0;
+      }
+    };
 
   [overlay]
   ProgressBar progress_bar_overlay {
@@ -115,47 +122,6 @@ Overlay terminal_page {
 
   [overlay]
   $GhosttyResizeOverlay resize_overlay {}
-
-  [overlay]
-  Revealer status_bar_revealer {
-    reveal-child: bind template.show-status-bar;
-    transition-type: crossfade;
-    transition-duration: 150;
-    halign: fill;
-    valign: end;
-    margin-bottom: 8;
-    margin-start: 12;
-    margin-end: 12;
-    can-focus: false;
-    can-target: false;
-    focusable: false;
-
-    Box status_bar_box {
-      hexpand: true;
-      spacing: 8;
-      styles [
-        "background",
-        "status-bar",
-      ]
-
-      Label status_bar_left {
-        hexpand: true;
-        xalign: 0;
-        use-markup: true;
-        styles [
-          "status-bar-text",
-        ]
-      }
-
-      Label status_bar_right {
-        xalign: 1;
-        use-markup: true;
-        styles [
-          "status-bar-text",
-        ]
-      }
-    }
-  }
 
   [overlay]
   Label url_left {
@@ -226,6 +192,57 @@ Overlay terminal_page {
     drop => $drop();
     actions: copy;
   }
+  }
+
+  Revealer status_bar_revealer {
+    reveal-child: bind template.show-status-bar;
+    transition-type: crossfade;
+    transition-duration: 150;
+    hexpand: true;
+    can-focus: false;
+    can-target: false;
+    focusable: false;
+
+    Box status_bar_box {
+      hexpand: true;
+      homogeneous: true;
+      spacing: 8;
+      styles [
+        "background",
+        "status-bar",
+      ]
+
+      Label status_bar_left {
+        hexpand: true;
+        xalign: 0;
+        ellipsize: middle;
+        use-markup: true;
+        styles [
+          "status-bar-text",
+        ]
+      }
+
+      Label status_bar_center {
+        hexpand: true;
+        xalign: 0.5;
+        ellipsize: middle;
+        use-markup: true;
+        styles [
+          "status-bar-text",
+        ]
+      }
+
+      Label status_bar_right {
+        hexpand: true;
+        xalign: 1;
+        ellipsize: middle;
+        use-markup: true;
+        styles [
+          "status-bar-text",
+        ]
+      }
+    }
+  }
 }
 
 template $GhosttySurface: Adw.Bin {
@@ -246,7 +263,7 @@ template $GhosttySurface: Adw.Bin {
   // this, be sure to test many splits!
   //
   // [^1]: https://github.com/ghostty-org/ghostty/issues/8533
-  child: terminal_page;
+  child: status_bar_container;
 }
 
 IMMulticontext im_context {

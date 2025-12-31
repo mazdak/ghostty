@@ -997,6 +997,26 @@ pub const Application = extern struct {
             \\
         );
 
+        const status_bar_tint_opacity = std.math.clamp(
+            config.@"status-bar-tint-opacity",
+            0.0,
+            1.0,
+        );
+        const bg = config.background;
+        const fg = config.foreground;
+        const inv = 1.0 - status_bar_tint_opacity;
+        const alpha = std.math.clamp(config.@"background-opacity", 0.0, 1.0);
+        const r = @as(u8, @intFromFloat(@round(@min(255.0, @max(0.0, inv * @as(f64, @floatFromInt(bg.r)) + status_bar_tint_opacity * @as(f64, @floatFromInt(fg.r)))))));
+        const g = @as(u8, @intFromFloat(@round(@min(255.0, @max(0.0, inv * @as(f64, @floatFromInt(bg.g)) + status_bar_tint_opacity * @as(f64, @floatFromInt(fg.g)))))));
+        const b = @as(u8, @intFromFloat(@round(@min(255.0, @max(0.0, inv * @as(f64, @floatFromInt(bg.b)) + status_bar_tint_opacity * @as(f64, @floatFromInt(fg.b)))))));
+
+        try writer.print(
+            \\.status-bar {{
+            \\  background-color: rgba({d},{d},{d},{d:.3});
+            \\}}
+            \\
+        , .{ r, g, b, alpha });
+
         switch (window_theme) {
             .ghostty => try writer.print(
                 \\:root {{

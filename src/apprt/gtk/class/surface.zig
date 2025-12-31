@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = @import("../../../quirks.zig").inlineAssert;
 const Allocator = std.mem.Allocator;
 const adw = @import("adw");
@@ -41,11 +40,6 @@ const i18n = @import("../../../os/i18n.zig");
 
 const log = std.log.scoped(.gtk_ghostty_surface);
 
-const CpuSample = struct {
-    idle: u64,
-    total: u64,
-};
-
 const default_time_fmt: [*:0]const u8 = "%H:%M";
 
 fn formatTime(fmt: [*:0]const u8, buf: []u8) ?[]const u8 {
@@ -60,102 +54,6 @@ fn formatTime(fmt: [*:0]const u8, buf: []u8) ?[]const u8 {
     return buf[0..written];
 }
 
-fn readCpuSampleLinux() ?CpuSample {
-    var file = std.fs.cwd().openFile("/proc/stat", .{}) catch return null;
-    defer file.close();
-
-    var buf: [512]u8 = undefined;
-    const n = file.readAll(&buf) catch return null;
-    if (n == 0) return null;
-    const data = buf[0..n];
-
-    const line = std.mem.splitScalar(u8, data, '\n').next() orelse return null;
-    if (!std.mem.startsWith(u8, line, "cpu ")) return null;
-
-    var it = std.mem.tokenizeAny(u8, line[4..], " \t");
-    var total: u64 = 0;
-    var idle: u64 = 0;
-    var idx: usize = 0;
-    while (it.next()) |tok| : (idx += 1) {
-        const val = std.fmt.parseUnsigned(u64, tok, 10) catch continue;
-        total += val;
-        if (idx == 3 or idx == 4) idle += val; // idle + iowait
-    }
-
-    if (total == 0) return null;
-    return .{ .idle = idle, .total = total };
-}
-
-fn cpuUsagePercent(prev: *?CpuSample) ?u8 {
-    if (builtin.target.os.tag != .linux) return null;
-    const sample = readCpuSampleLinux() orelse return null;
-    if (prev.*) |prev_sample| {
-        if (sample.total <= prev_sample.total or sample.idle < prev_sample.idle) {
-            prev.* = sample;
-            return null;
-        }
-        const total_delta = sample.total - prev_sample.total;
-        const idle_delta = sample.idle - prev_sample.idle;
-        if (total_delta == 0 or total_delta < idle_delta) {
-            prev.* = sample;
-            return null;
-        }
-        const usage = (total_delta - idle_delta) * 100 / total_delta;
-        prev.* = sample;
-        return @intCast(@min(usage, 100));
-    }
-
-    prev.* = sample;
-    return null;
-}
-
-fn memUsagePercentLinux() ?u8 {
-    var file = std.fs.cwd().openFile("/proc/meminfo", .{}) catch return null;
-    defer file.close();
-
-    var buf: [2048]u8 = undefined;
-    const n = file.readAll(&buf) catch return null;
-    if (n == 0) return null;
-    const data = buf[0..n];
-
-    var total_kb: u64 = 0;
-    var avail_kb: u64 = 0;
-    var free_kb: u64 = 0;
-
-    var it = std.mem.splitScalar(u8, data, '\n');
-    while (it.next()) |line| {
-        if (std.mem.startsWith(u8, line, "MemTotal:")) {
-            var tok = std.mem.tokenizeAny(u8, line["MemTotal:".len..], " \t");
-            if (tok.next()) |value| {
-                total_kb = std.fmt.parseUnsigned(u64, value, 10) catch total_kb;
-            }
-        } else if (std.mem.startsWith(u8, line, "MemAvailable:")) {
-            var tok = std.mem.tokenizeAny(u8, line["MemAvailable:".len..], " \t");
-            if (tok.next()) |value| {
-                avail_kb = std.fmt.parseUnsigned(u64, value, 10) catch avail_kb;
-            }
-        } else if (std.mem.startsWith(u8, line, "MemFree:")) {
-            var tok = std.mem.tokenizeAny(u8, line["MemFree:".len..], " \t");
-            if (tok.next()) |value| {
-                free_kb = std.fmt.parseUnsigned(u64, value, 10) catch free_kb;
-            }
-        }
-    }
-
-    if (total_kb == 0) return null;
-    const available = if (avail_kb != 0) avail_kb else free_kb;
-    if (available == 0) return null;
-    const used = total_kb -| available;
-    const percent = used * 100 / total_kb;
-    return @intCast(@min(percent, 100));
-}
-
-fn memUsagePercent() ?u8 {
-    return switch (builtin.target.os.tag) {
-        .linux => memUsagePercentLinux(),
-        else => null,
-    };
-}
 
 pub const Surface = extern struct {
     const Self = @This();
@@ -734,17 +632,16 @@ pub const Surface = extern struct {
         /// The key state overlay
         key_state_overlay: *KeyStateOverlay,
 
-        /// Status bar overlay widgets
+        /// Status bar widgets and container
+        status_bar_container: *gtk.Box,
         status_bar_revealer: *gtk.Revealer,
+        status_bar_box: *gtk.Box,
         status_bar_left: *gtk.Label,
+        status_bar_center: *gtk.Label,
         status_bar_right: *gtk.Label,
 
-        /// Status bar timer and cached modifier state
+        /// Status bar timer
         status_bar_timer: ?c_uint = null,
-        status_bar_mods: input.Mods = .{},
-        status_bar_cpu_prev: ?CpuSample = null,
-        status_bar_cpu_percent: ?u8 = null,
-        status_bar_mem_percent: ?u8 = null,
 
         /// The apprt Surface.
         rt_surface: ApprtSurface = undefined,
@@ -983,9 +880,6 @@ pub const Surface = extern struct {
         priv.show_status_bar = !priv.show_status_bar;
         self.as(gobject.Object).notifyByPspec(properties.@"show-status-bar".impl.param_spec);
         if (priv.show_status_bar) {
-            priv.status_bar_cpu_prev = readCpuSampleLinux();
-            priv.status_bar_cpu_percent = if (priv.status_bar_cpu_prev != null) 0 else null;
-            priv.status_bar_mem_percent = memUsagePercent();
             self.statusBarUpdate();
             if (priv.status_bar_timer == null) {
                 priv.status_bar_timer = glib.timeoutAdd(
@@ -1012,12 +906,6 @@ pub const Surface = extern struct {
             return @intFromBool(glib.SOURCE_REMOVE);
         }
 
-        if (cpuUsagePercent(&priv.status_bar_cpu_prev)) |percent| {
-            priv.status_bar_cpu_percent = percent;
-        }
-        if (memUsagePercent()) |percent| {
-            priv.status_bar_mem_percent = percent;
-        }
         self.statusBarUpdate();
         return @intFromBool(glib.SOURCE_CONTINUE);
     }
@@ -1031,26 +919,64 @@ pub const Surface = extern struct {
 
         const layout = std.mem.trim(u8, cfg.@"status-bar", &std.ascii.whitespace);
         if (layout.len == 0) {
-            statusBarSetLabel(Application.default().allocator(), priv.status_bar_left, "");
-            statusBarSetLabel(Application.default().allocator(), priv.status_bar_right, "");
+            const alloc = Application.default().allocator();
+            statusBarSetLabel(alloc, priv.status_bar_left, "");
+            statusBarSetLabel(alloc, priv.status_bar_center, "");
+            statusBarSetLabel(alloc, priv.status_bar_right, "");
             return;
         }
 
-        const split_idx = std.mem.indexOf(u8, layout, "<->");
+        const delimiter = "<->";
+        const split_idx = std.mem.indexOf(u8, layout, delimiter);
         const left = if (split_idx) |idx| layout[0..idx] else layout;
-        const right = if (split_idx) |idx| layout[idx + 3 ..] else "";
+        const rest = if (split_idx) |idx| layout[idx + delimiter.len ..] else "";
+        const center_split = if (split_idx != null) std.mem.indexOf(u8, rest, delimiter) else null;
+        const center = if (center_split) |idx| rest[0..idx] else "";
+        const right = if (center_split) |idx| rest[idx + delimiter.len ..] else if (split_idx != null) rest else "";
 
         const alloc = Application.default().allocator();
         var left_buf: std.Io.Writer.Allocating = .init(alloc);
         defer left_buf.deinit();
         _ = self.statusBarWriteSide(cfg, left, &left_buf.writer) catch {};
 
+        var center_buf: std.Io.Writer.Allocating = .init(alloc);
+        defer center_buf.deinit();
+        _ = self.statusBarWriteSide(cfg, center, &center_buf.writer) catch {};
+
         var right_buf: std.Io.Writer.Allocating = .init(alloc);
         defer right_buf.deinit();
         _ = self.statusBarWriteSide(cfg, right, &right_buf.writer) catch {};
 
         statusBarSetLabel(alloc, priv.status_bar_left, left_buf.written());
+        statusBarSetLabel(alloc, priv.status_bar_center, center_buf.written());
         statusBarSetLabel(alloc, priv.status_bar_right, right_buf.written());
+    }
+
+    fn statusBarApplyPosition(self: *Self, position: configpkg.StatusBarPosition) void {
+        const priv = self.private();
+        const container = priv.status_bar_container;
+        const status_bar = priv.status_bar_revealer.as(gtk.Widget);
+        const status_bar_box = priv.status_bar_box.as(gtk.Widget);
+        const terminal_page = priv.terminal_page.as(gtk.Widget);
+
+        status_bar_box.removeCssClass("status-bar-top");
+        status_bar_box.removeCssClass("status-bar-bottom");
+
+        status_bar.unparent();
+        terminal_page.unparent();
+
+        switch (position) {
+            .top => {
+                status_bar_box.addCssClass("status-bar-top");
+                container.append(status_bar);
+                container.append(terminal_page);
+            },
+            .bottom => {
+                status_bar_box.addCssClass("status-bar-bottom");
+                container.append(terminal_page);
+                container.append(status_bar);
+            },
+        }
     }
 
     fn statusBarWriteSide(
@@ -1064,8 +990,8 @@ pub const Surface = extern struct {
         while (it.next()) |token| {
             const widget = statusBarWidgetForToken(cfg, token) orelse continue;
             var buf: [256]u8 = undefined;
-            const value = self.statusBarWidgetValue(widget, &buf) orelse continue;
-            const style = statusBarStyleForWidget(cfg, widget, value.number);
+            const value = self.statusBarWidgetValue(cfg, widget, &buf) orelse continue;
+            const style = statusBarStyleForWidget(cfg, widget);
             if (any) try writer.writeAll("  ");
             try statusBarWriteStyled(writer, value.text, style);
             any = true;
@@ -1092,11 +1018,11 @@ pub const Surface = extern struct {
 
     const StatusBarValue = struct {
         text: []const u8,
-        number: ?f32,
     };
 
     fn statusBarWidgetValue(
         self: *Self,
+        cfg: *const configpkg.Config,
         widget: configpkg.StatusBarWidget,
         buf: []u8,
     ) ?StatusBarValue {
@@ -1106,60 +1032,53 @@ pub const Surface = extern struct {
             .time => {
                 const fmt: [*:0]const u8 = if (widget.format) |f| @ptrCast(f.ptr) else default_time_fmt;
                 const text = formatTime(fmt, buf) orelse return null;
-                return .{ .text = text, .number = null };
+                return .{ .text = text };
             },
-            .cwd, .pwd => {
-                if (priv.pwd) |pwd| return .{ .text = std.mem.span(pwd), .number = null };
+            .cwd => {
+                if (priv.pwd) |pwd| return .{ .text = std.mem.span(pwd) };
                 return null;
             },
             .size => {
                 const surface = priv.core_surface orelse return null;
                 const grid = surface.size.grid();
                 const text = std.fmt.bufPrint(buf, "{d}x{d}", .{ grid.columns, grid.rows }) catch return null;
-                return .{ .text = text, .number = null };
+                return .{ .text = text };
             },
-            .modifiers => {
-                const text = formatMods(priv.status_bar_mods, buf) orelse return null;
-                return .{ .text = text, .number = null };
+            .title => {
+                const text = statusBarTitle(self, cfg, buf) orelse return null;
+                return .{ .text = text };
             },
-            .pending_key => {
-                if (priv.key_sequence.items.len == 0) return null;
-                var writer: std.Io.Writer = .fixed(buf);
-                for (priv.key_sequence.items, 0..) |key, i| {
-                    if (i > 0) writer.writeByte(' ') catch return null;
-                    writer.writeAll(std.mem.span(key)) catch return null;
-                }
-                return .{ .text = writer.buffered(), .number = null };
-            },
-            .cpu => {
-                if (priv.status_bar_cpu_percent) |percent| {
-                    const text = std.fmt.bufPrint(buf, "CPU {d}%", .{percent}) catch return null;
-                    return .{ .text = text, .number = @floatFromInt(percent) };
-                }
-                return null;
-            },
-            .memory => {
-                if (priv.status_bar_mem_percent) |percent| {
-                    const text = std.fmt.bufPrint(buf, "Mem {d}%", .{percent}) catch return null;
-                    return .{ .text = text, .number = @floatFromInt(percent) };
-                }
-                return null;
-            },
-            .cursor_pos => return null,
         }
+    }
+
+    fn statusBarTitle(
+        self: *Self,
+        cfg: *const configpkg.Config,
+        buf: []u8,
+    ) ?[]const u8 {
+        const priv = self.private();
+        const plain = plain: {
+            if (priv.title_override) |v| break :plain std.mem.span(v);
+            if (priv.title) |v| break :plain std.mem.span(v);
+            if (cfg.title) |v| break :plain std.mem.span(v);
+            break :plain "Ghostty";
+        };
+
+        var writer: std.Io.Writer = .fixed(buf);
+        if (priv.bell_ringing and cfg.@"bell-features".title) {
+            writer.writeAll("🔔 ") catch return null;
+        }
+        if (priv.zoom) {
+            writer.writeAll("🔍 ") catch return null;
+        }
+        writer.writeAll(plain) catch return null;
+        return writer.buffered();
     }
 
     fn statusBarStyleForWidget(
         cfg: *const configpkg.Config,
         widget: configpkg.StatusBarWidget,
-        value: ?f32,
     ) ?configpkg.StatusBarStyle {
-        if (value) |num| {
-            if (widget.style_range) |range_name| {
-                const range_slice = std.mem.sliceTo(range_name, 0);
-                if (statusBarStyleForRange(cfg, range_slice, num)) |style| return style;
-            }
-        }
         if (widget.style) |style_name| {
             const style_slice = std.mem.sliceTo(style_name, 0);
             return statusBarStyleByName(cfg, style_slice);
@@ -1173,21 +1092,6 @@ pub const Surface = extern struct {
     ) ?configpkg.StatusBarStyle {
         for (cfg.@"status-bar-style".value.items) |style| {
             if (std.mem.eql(u8, style.name, name)) return style;
-        }
-        return null;
-    }
-
-    fn statusBarStyleForRange(
-        cfg: *const configpkg.Config,
-        range_name: []const u8,
-        value: f32,
-    ) ?configpkg.StatusBarStyle {
-        for (cfg.@"status-bar-style-range".value.items) |range| {
-            if (!std.mem.eql(u8, range.name, range_name)) continue;
-            if (range.styleForValue(value)) |style_name| {
-                return statusBarStyleByName(cfg, style_name);
-            }
-            return null;
         }
         return null;
     }
@@ -1250,34 +1154,6 @@ pub const Surface = extern struct {
                 else => writer.writeByte(ch) catch break,
             }
         }
-        return writer.buffered();
-    }
-
-    fn formatMods(mods: input.Mods, buf: []u8) ?[]const u8 {
-        var writer: std.Io.Writer = .fixed(buf);
-        var any = false;
-
-        if (mods.alt) {
-            writer.writeAll("Alt") catch return null;
-            any = true;
-        }
-        if (mods.ctrl) {
-            if (any) writer.writeByte(' ') catch return null;
-            writer.writeAll("Ctrl") catch return null;
-            any = true;
-        }
-        if (mods.shift) {
-            if (any) writer.writeByte(' ') catch return null;
-            writer.writeAll("Shift") catch return null;
-            any = true;
-        }
-        if (mods.caps_lock) {
-            if (any) writer.writeByte(' ') catch return null;
-            writer.writeAll("Caps") catch return null;
-            any = true;
-        }
-
-        if (!any) return null;
         return writer.buffered();
     }
 
@@ -1747,11 +1623,6 @@ pub const Surface = extern struct {
             action,
             Application.default().winproto(),
         );
-
-        if (!mods.equal(priv.status_bar_mods)) {
-            priv.status_bar_mods = mods;
-            self.statusBarUpdate();
-        }
 
         // Get our consumed modifiers
         const consumed_mods: input.Mods = consumed: {
@@ -2417,6 +2288,7 @@ pub const Surface = extern struct {
         priv.title = null;
         if (title) |v| priv.title = glib.ext.dupeZ(u8, v);
         self.as(gobject.Object).notifyByPspec(properties.title.impl.param_spec);
+        self.statusBarUpdate();
     }
 
     /// Overridden title. This will be generally be shown over the title
@@ -2427,6 +2299,7 @@ pub const Surface = extern struct {
         priv.title_override = null;
         if (title) |v| priv.title_override = glib.ext.dupeZ(u8, v);
         self.as(gobject.Object).notifyByPspec(properties.@"title-override".impl.param_spec);
+        self.statusBarUpdate();
     }
 
     /// Returns the pwd property without a copy.
@@ -2562,6 +2435,7 @@ pub const Surface = extern struct {
         if (priv.bell_ringing == ringing) return;
         priv.bell_ringing = ringing;
         self.as(gobject.Object).notifyByPspec(properties.@"bell-ringing".impl.param_spec);
+        self.statusBarUpdate();
     }
 
     pub fn setError(self: *Self, v: bool) void {
@@ -2644,6 +2518,9 @@ pub const Surface = extern struct {
             );
         }
 
+        // status-bar-position
+        self.statusBarApplyPosition(config.@"status-bar-position");
+
         self.statusBarUpdate();
     }
 
@@ -2682,7 +2559,7 @@ pub const Surface = extern struct {
         if (priv.@"error") {
             self.as(adw.Bin).setChild(priv.error_page.as(gtk.Widget));
         } else {
-            self.as(adw.Bin).setChild(priv.terminal_page.as(gtk.Widget));
+            self.as(adw.Bin).setChild(priv.status_bar_container.as(gtk.Widget));
         }
         return 0;
     }
@@ -3882,8 +3759,11 @@ pub const Surface = extern struct {
             class.bindTemplateChildPrivate("resize_overlay", .{});
             class.bindTemplateChildPrivate("search_overlay", .{});
             class.bindTemplateChildPrivate("key_state_overlay", .{});
+            class.bindTemplateChildPrivate("status_bar_container", .{});
             class.bindTemplateChildPrivate("status_bar_revealer", .{});
+            class.bindTemplateChildPrivate("status_bar_box", .{});
             class.bindTemplateChildPrivate("status_bar_left", .{});
+            class.bindTemplateChildPrivate("status_bar_center", .{});
             class.bindTemplateChildPrivate("status_bar_right", .{});
             class.bindTemplateChildPrivate("terminal_page", .{});
             class.bindTemplateChildPrivate("drop_target", .{});

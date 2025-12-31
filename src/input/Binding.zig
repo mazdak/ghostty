@@ -641,7 +641,7 @@ pub const Action = union(enum) {
     /// Valid arguments: `toggle`, `show`, `hide`.
     inspector: InspectorMode,
 
-    /// Toggle the status bar overlay.
+    /// Toggle the status bar.
     ///
     /// Shows a configurable status bar for the focused terminal surface.
     toggle_status_bar,

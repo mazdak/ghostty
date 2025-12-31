@@ -24,6 +24,7 @@ extension Ghostty {
                     titleFallbackTimer?.invalidate()
                     titleFallbackTimer = nil
                 }
+                updateStatusBar()
             }
         }
 
@@ -37,7 +38,7 @@ extension Ghostty {
             }
         }
 
-        // Whether to show the status bar overlay
+        // Whether to show the status bar
         @Published var showStatusBar: Bool = false {
             didSet {
                 updateStatusBarVisibility()
@@ -46,7 +47,10 @@ extension Ghostty {
 
         // Cached status bar text
         @Published private(set) var statusBarLeft: AttributedString = ""
+        @Published private(set) var statusBarCenter: AttributedString = ""
         @Published private(set) var statusBarRight: AttributedString = ""
+        @Published private(set) var statusBarPosition: Ghostty.Config.StatusBarPosition = .bottom
+        @Published private(set) var statusBarTintOpacity: Double = 0
 
         // The cell size of this surface. This is set by the core when the
         // surface is first created and any time the cell size changes (i.e.
@@ -150,8 +154,14 @@ extension Ghostty {
         /// dynamically updated. Otherwise, the background color is the default background color.
         @Published private(set) var backgroundColor: Color? = nil
 
+        /// The foreground color within the color palette of the surface. This is only set if it is
+        /// dynamically updated. Otherwise, the foreground color is the default foreground color.
+        @Published private(set) var foregroundColor: Color? = nil
+
         /// True when the bell is active. This is set inactive on focus or event.
-        @Published private(set) var bell: Bool = false
+        @Published private(set) var bell: Bool = false {
+            didSet { updateStatusBar() }
+        }
 
         /// True when the surface is in readonly mode.
         @Published private(set) var readonly: Bool = false
@@ -253,8 +263,6 @@ extension Ghostty {
         // Status bar timer and config
         private var statusBarTimer: Timer?
         private var statusBarConfig: StatusBarConfig = .init()
-        private var statusBarStats: StatusBarStats = .init()
-        private var lastModifierFlags: NSEvent.ModifierFlags = []
 
         // This is the title from the terminal. This is nil if we're currently using
         // the terminal title as the main title property. If the title is set manually
@@ -283,6 +291,8 @@ extension Ghostty {
                 self.derivedConfig = DerivedConfig()
                 self.statusBarConfig = StatusBarConfig()
             }
+            self.statusBarPosition = self.statusBarConfig.position
+            self.statusBarTintOpacity = self.statusBarConfig.tintOpacity
 
             // We need to initialize this so it does something but we want to set
             // it back up later so we can reference `self`. This is a hack we should
@@ -755,6 +765,8 @@ extension Ghostty {
                 guard let self else { return }
                 self.derivedConfig = DerivedConfig(config)
                 self.statusBarConfig = StatusBarConfig(config)
+                self.statusBarPosition = self.statusBarConfig.position
+                self.statusBarTintOpacity = self.statusBarConfig.tintOpacity
                 self.updateStatusBar()
             }
         }
@@ -768,6 +780,11 @@ extension Ghostty {
             case .background:
                 DispatchQueue.main.async { [weak self] in
                     self?.backgroundColor = change.color
+                }
+
+            case .foreground:
+                DispatchQueue.main.async { [weak self] in
+                    self?.foregroundColor = change.color
                 }
 
             default:
@@ -816,12 +833,9 @@ extension Ghostty {
             }
 
             if showStatusBar {
-                statusBarStats.reset()
-                statusBarStats.prime()
                 if statusBarTimer == nil {
                     statusBarTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
                         guard let self else { return }
-                        self.statusBarStats.update()
                         self.updateStatusBar()
                     }
                 }
@@ -830,6 +844,7 @@ extension Ghostty {
                 statusBarTimer?.invalidate()
                 statusBarTimer = nil
                 statusBarLeft = ""
+                statusBarCenter = ""
                 statusBarRight = ""
             }
         }
@@ -844,14 +859,15 @@ extension Ghostty {
 
             guard showStatusBar else { return }
             let left = renderStatusBarSide(statusBarConfig.layout.left)
+            let center = renderStatusBarSide(statusBarConfig.layout.center)
             let right = renderStatusBarSide(statusBarConfig.layout.right)
             statusBarLeft = left
+            statusBarCenter = center
             statusBarRight = right
         }
 
         private struct StatusBarValue {
             let text: String
-            let number: Double?
         }
 
         private func renderStatusBarSide(_ tokens: [String]) -> AttributedString {
@@ -863,7 +879,7 @@ extension Ghostty {
                 if !first {
                     result.append(AttributedString("  "))
                 }
-                let style = statusBarConfig.style(for: widget, numeric: value.number)
+                let style = statusBarConfig.style(for: widget)
                 result.append(applyStatusBarStyle(value.text, style: style))
                 first = false
             }
@@ -874,27 +890,20 @@ extension Ghostty {
             switch widget.kind {
             case .time:
                 guard let formatted = formatTime(widget.format ?? "%H:%M") else { return nil }
-                return StatusBarValue(text: formatted, number: nil)
-            case .cwd, .pwd:
+                return StatusBarValue(text: formatted)
+            case .cwd:
                 guard let pwd else { return nil }
-                return StatusBarValue(text: pwd, number: nil)
+                return StatusBarValue(text: pwd)
             case .size:
                 guard let size = surfaceSize else { return nil }
-                return StatusBarValue(text: "\(size.columns)x\(size.rows)", number: nil)
-            case .modifiers:
-                guard let mods = formatModifiers() else { return nil }
-                return StatusBarValue(text: mods, number: nil)
-            case .pending_key:
-                guard !keySequence.isEmpty else { return nil }
-                return StatusBarValue(text: keySequence.map(\.description).joined(separator: " "), number: nil)
-            case .cpu:
-                guard let percent = statusBarStats.cpuPercent else { return nil }
-                return StatusBarValue(text: "CPU \(percent)%", number: Double(percent))
-            case .memory:
-                guard let percent = statusBarStats.memPercent else { return nil }
-                return StatusBarValue(text: "Mem \(percent)%", number: Double(percent))
-            case .cursor_pos:
-                return nil
+                return StatusBarValue(text: "\(size.columns)x\(size.rows)")
+            case .title:
+                guard !title.isEmpty else { return nil }
+                var text = title
+                if bell && statusBarConfig.bellTitleEnabled {
+                    text = "🔔 \(text)"
+                }
+                return StatusBarValue(text: text)
             }
         }
 
@@ -920,15 +929,6 @@ extension Ghostty {
 
             return attr
         }
-        private func formatModifiers() -> String? {
-            var parts: [String] = []
-            if lastModifierFlags.contains(.option) { parts.append("Alt") }
-            if lastModifierFlags.contains(.control) { parts.append("Ctrl") }
-            if lastModifierFlags.contains(.shift) { parts.append("Shift") }
-            if lastModifierFlags.contains(.capsLock) { parts.append("Caps") }
-            return parts.isEmpty ? nil : parts.joined(separator: " ")
-        }
-
         private func formatTime(_ format: String) -> String? {
             var t = time(nil)
             var tm = tm()
@@ -939,12 +939,6 @@ extension Ghostty {
             }
             guard written > 0 else { return nil }
             return String(cString: buffer)
-        }
-
-        private func updateModifierFlags(_ flags: NSEvent.ModifierFlags) {
-            if flags == lastModifierFlags { return }
-            lastModifierFlags = flags
-            updateStatusBar()
         }
 
         // MARK: - NSView
@@ -1216,7 +1210,6 @@ extension Ghostty {
                 return
             }
 
-            updateModifierFlags(event.modifierFlags)
 
             // On any keyDown event we unset our bell state
             bell = false
@@ -1335,7 +1328,6 @@ extension Ghostty {
         }
 
         override func keyUp(with event: NSEvent) {
-            updateModifierFlags(event.modifierFlags)
             _ = keyAction(GHOSTTY_ACTION_RELEASE, event: event)
         }
 
@@ -1491,7 +1483,6 @@ extension Ghostty {
         }
 
         override func flagsChanged(with event: NSEvent) {
-            updateModifierFlags(event.modifierFlags)
             let mod: UInt32;
             switch (event.keyCode) {
             case 0x39: mod = GHOSTTY_MODS_CAPS.rawValue
@@ -1898,19 +1889,26 @@ extension Ghostty {
 
         struct StatusBarConfig {
             let layout: StatusBarLayout
+            let position: Ghostty.Config.StatusBarPosition
+            let bellTitleEnabled: Bool
+            let tintOpacity: Double
             private let widgetsByName: [String: Ghostty.Config.StatusBarWidget]
             private let stylesByName: [String: Ghostty.Config.StatusBarStyle]
-            private let styleRangesByName: [String: Ghostty.Config.StatusBarStyleRange]
 
             init() {
                 self.layout = StatusBarLayout("")
+                self.position = .bottom
+                self.bellTitleEnabled = false
+                self.tintOpacity = 0
                 self.widgetsByName = [:]
                 self.stylesByName = [:]
-                self.styleRangesByName = [:]
             }
 
             init(_ config: Ghostty.Config) {
                 self.layout = StatusBarLayout(config.statusBarLayout)
+                self.position = config.statusBarPosition
+                self.bellTitleEnabled = config.bellFeatures.contains(.title)
+                self.tintOpacity = config.statusBarTintOpacity
                 var dict: [String: Ghostty.Config.StatusBarWidget] = [:]
                 for widget in config.statusBarWidgets {
                     let key = widget.name ?? widget.kind.rawValue
@@ -1927,32 +1925,17 @@ extension Ghostty {
                     }
                 }
                 self.stylesByName = styles
-
-                var ranges: [String: Ghostty.Config.StatusBarStyleRange] = [:]
-                for range in config.statusBarStyleRanges {
-                    if ranges[range.name] == nil {
-                        ranges[range.name] = range
-                    }
-                }
-                self.styleRangesByName = ranges
             }
 
             func widget(named name: String) -> Ghostty.Config.StatusBarWidget? {
                 if let widget = widgetsByName[name] { return widget }
                 if let kind = Ghostty.Config.StatusBarWidget.Kind.fromToken(name) {
-                    return .init(kind: kind, name: nil, format: nil, style: nil, styleRange: nil)
+                    return .init(kind: kind, name: nil, format: nil, style: nil)
                 }
                 return nil
             }
 
-            func style(for widget: Ghostty.Config.StatusBarWidget, numeric: Double?) -> Ghostty.Config.StatusBarStyle? {
-                if let value = numeric,
-                   let rangeName = widget.styleRange,
-                   let range = styleRangesByName[rangeName],
-                   let styleName = range.styleName(for: value),
-                   let style = stylesByName[styleName] {
-                    return style
-                }
+            func style(for widget: Ghostty.Config.StatusBarWidget) -> Ghostty.Config.StatusBarStyle? {
                 if let styleName = widget.style, let style = stylesByName[styleName] {
                     return style
                 }
@@ -1962,107 +1945,38 @@ extension Ghostty {
 
         struct StatusBarLayout {
             let left: [String]
+            let center: [String]
             let right: [String]
 
             init(_ raw: String) {
                 let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !trimmed.isEmpty else {
                     left = []
+                    center = []
                     right = []
                     return
                 }
 
-                if let range = trimmed.range(of: "<->") {
-                    left = StatusBarLayout.tokens(String(trimmed[..<range.lowerBound]))
-                    right = StatusBarLayout.tokens(String(trimmed[range.upperBound...]))
-                } else {
-                    left = StatusBarLayout.tokens(trimmed)
+                let delimiter = "<->"
+                let parts = trimmed.components(separatedBy: delimiter)
+                switch parts.count {
+                case 1:
+                    left = StatusBarLayout.tokens(parts[0])
+                    center = []
                     right = []
+                case 2:
+                    left = StatusBarLayout.tokens(parts[0])
+                    center = []
+                    right = StatusBarLayout.tokens(parts[1])
+                default:
+                    left = StatusBarLayout.tokens(parts[0])
+                    center = StatusBarLayout.tokens(parts[1])
+                    right = StatusBarLayout.tokens(parts[2])
                 }
             }
 
             private static func tokens(_ input: String) -> [String] {
                 return input.split { $0.isWhitespace }.map(String.init)
-            }
-        }
-
-        struct StatusBarStats {
-            var cpuPercent: Int? = nil
-            var memPercent: Int? = nil
-            private var prevCpuTicks: (UInt32, UInt32, UInt32, UInt32)?
-
-            mutating func reset() {
-                cpuPercent = nil
-                memPercent = nil
-                prevCpuTicks = nil
-            }
-
-            mutating func prime() {
-                if prevCpuTicks == nil, let ticks = StatusBarStats.readCpuTicks() {
-                    prevCpuTicks = ticks
-                    cpuPercent = 0
-                }
-                if memPercent == nil {
-                    memPercent = StatusBarStats.readMemPercent()
-                }
-            }
-
-            mutating func update() {
-                if let cpu = StatusBarStats.readCpuPercent(prev: &prevCpuTicks) {
-                    cpuPercent = cpu
-                }
-                if let mem = StatusBarStats.readMemPercent() {
-                    memPercent = mem
-                }
-            }
-
-            private static func readCpuTicks() -> (UInt32, UInt32, UInt32, UInt32)? {
-                var cpuInfo = host_cpu_load_info_data_t()
-                var count = mach_msg_type_number_t(MemoryLayout<host_cpu_load_info_data_t>.size / MemoryLayout<integer_t>.size)
-                let result = withUnsafeMutablePointer(to: &cpuInfo) { infoPtr in
-                    infoPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
-                        host_statistics(mach_host_self(), HOST_CPU_LOAD_INFO, intPtr, &count)
-                    }
-                }
-
-                guard result == KERN_SUCCESS else { return nil }
-                return (cpuInfo.cpu_ticks.0, cpuInfo.cpu_ticks.1, cpuInfo.cpu_ticks.2, cpuInfo.cpu_ticks.3)
-            }
-
-            private static func readCpuPercent(prev: inout (UInt32, UInt32, UInt32, UInt32)?) -> Int? {
-                guard let ticks = readCpuTicks() else { return nil }
-                defer { prev = ticks }
-
-                guard let prevTicks = prev else { return nil }
-                let user = UInt64(ticks.0 &- prevTicks.0)
-                let system = UInt64(ticks.1 &- prevTicks.1)
-                let idle = UInt64(ticks.2 &- prevTicks.2)
-                let nice = UInt64(ticks.3 &- prevTicks.3)
-                let total = user + system + idle + nice
-                guard total > 0 else { return nil }
-                let used = total - idle
-                let percent = min(100, Int(used * 100 / total))
-                return percent
-            }
-
-            private static func readMemPercent() -> Int? {
-                var stats = vm_statistics64_data_t()
-                var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
-                let result = withUnsafeMutablePointer(to: &stats) { statsPtr in
-                    statsPtr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { intPtr in
-                        host_statistics64(mach_host_self(), HOST_VM_INFO64, intPtr, &count)
-                    }
-                }
-
-                guard result == KERN_SUCCESS else { return nil }
-
-                let total = ProcessInfo.processInfo.physicalMemory
-                guard total > 0 else { return nil }
-
-                let free = UInt64(stats.free_count + stats.inactive_count + stats.speculative_count) * UInt64(vm_kernel_page_size)
-                let used = total - min(total, free)
-                let percent = min(100, Int(used * 100 / total))
-                return percent
             }
         }
 

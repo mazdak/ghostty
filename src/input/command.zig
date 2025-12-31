@@ -654,7 +654,7 @@ fn actionCommands(action: Action.Key) []const Command {
         .toggle_status_bar => comptime &.{.{
             .action = .toggle_status_bar,
             .title = "Toggle Status Bar",
-            .description = "Toggle the status bar overlay.",
+            .description = "Toggle the status bar.",
         }},
 
         .check_for_updates => comptime &.{.{

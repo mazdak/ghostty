@@ -15,6 +15,7 @@ extension Ghostty {
             }
         }
     }
+    
 
     /// Yields a SurfaceView for a ghostty app that can then be used however you want.
     struct SurfaceForApp<Content: View>: View {
@@ -60,11 +61,21 @@ extension Ghostty {
         var body: some View {
             let center = NotificationCenter.default
 
-            ZStack {
-                // We use a GeometryReader to get the frame bounds so that our metal surface
-                // is up to date. See TerminalSurfaceView for why we don't use the NSView
-                // resize callback.
-                GeometryReader { geo in
+            VStack(spacing: 0) {
+#if canImport(AppKit)
+                if surfaceView.showStatusBar && surfaceView.statusBarPosition == .top {
+                    StatusBarOverlay(surfaceView: surfaceView)
+                        .frame(maxWidth: .infinity)
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+#endif
+
+                ZStack {
+                    // We use a GeometryReader to get the frame bounds so that our metal surface
+                    // is up to date. See TerminalSurfaceView for why we don't use the NSView
+                    // resize callback.
+                    GeometryReader { geo in
                     #if canImport(AppKit)
                     let pubBecomeKey = center.publisher(for: NSWindow.didBecomeKeyNotification)
                     let pubResign = center.publisher(for: NSWindow.didResignKeyNotification)
@@ -129,13 +140,6 @@ extension Ghostty {
                     keySequence: surfaceView.keySequence
                 )
 
-                // Status bar overlay
-                if surfaceView.showStatusBar {
-                    StatusBarOverlay(surfaceView: surfaceView)
-                        .frame(maxWidth: .infinity)
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                }
 #endif
 
                 // If we have a URL from hovering a link, we show that.
@@ -242,7 +246,16 @@ extension Ghostty {
                 #endif
             }
 
+#if canImport(AppKit)
+            if surfaceView.showStatusBar && surfaceView.statusBarPosition == .bottom {
+                StatusBarOverlay(surfaceView: surfaceView)
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+#endif
         }
+    }
     }
 
     struct SurfaceRendererUnhealthyView: View {
@@ -976,16 +989,18 @@ extension Ghostty {
         }
     }
 
-    /// Status bar overlay showing configurable widgets.
+    /// Status bar showing configurable widgets.
     struct StatusBarOverlay: View {
         @ObservedObject var surfaceView: SurfaceView
+        @EnvironmentObject private var ghostty: Ghostty.App
 
         var body: some View {
-            if surfaceView.statusBarLeft.characters.isEmpty && surfaceView.statusBarRight.characters.isEmpty {
+            if surfaceView.statusBarLeft.characters.isEmpty &&
+                surfaceView.statusBarCenter.characters.isEmpty &&
+                surfaceView.statusBarRight.characters.isEmpty {
                 EmptyView()
             } else {
-                VStack {
-                    Spacer()
+                ZStack {
                     HStack(spacing: 8) {
                         Text(surfaceView.statusBarLeft)
                             .lineLimit(1)
@@ -995,21 +1010,33 @@ extension Ghostty {
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
-                    .font(.system(.caption, design: .monospaced))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(.background)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.gray.opacity(0.5), lineWidth: 1)
-                    )
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
+                    Text(surfaceView.statusBarCenter)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: .infinity)
                 }
+                .font(.system(.caption, design: .monospaced))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
                 .frame(maxWidth: .infinity)
+                .background(
+                    ZStack {
+                        Rectangle()
+                            .fill(surfaceView.backgroundColor ?? surfaceView.derivedConfig.backgroundColor)
+                        if surfaceView.statusBarTintOpacity > 0 {
+                            let tintColor = surfaceView.foregroundColor ?? ghostty.config.foregroundColor
+                            Rectangle()
+                                .fill(tintColor.opacity(surfaceView.statusBarTintOpacity))
+                        }
+                    }
+                    .opacity(surfaceView.derivedConfig.backgroundOpacity)
+                )
+                .overlay(alignment: surfaceView.statusBarPosition == .top ? .bottom : .top) {
+                    Rectangle()
+                        .fill(Color.gray.opacity(0.5))
+                        .frame(height: 1)
+                        .frame(maxWidth: .infinity)
+                }
             }
         }
     }

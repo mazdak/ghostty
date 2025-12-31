@@ -39,10 +39,16 @@ label.url-overlay.right {
  */
 .status-bar {
   padding: 6px 12px;
-  border-radius: 6px;
-  outline-style: solid;
-  outline-color: #555555;
-  outline-width: 1px;
+  border-radius: 0px;
+  outline-style: none;
+}
+
+.status-bar-top {
+  border-bottom: 1px solid #555555;
+}
+
+.status-bar-bottom {
+  border-top: 1px solid #555555;
 }
 
 label.status-bar-text {
