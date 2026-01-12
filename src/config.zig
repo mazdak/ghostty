@@ -43,6 +43,9 @@ pub const WindowPaddingColor = Config.WindowPaddingColor;
 pub const BackgroundImagePosition = Config.BackgroundImagePosition;
 pub const BackgroundImageFit = Config.BackgroundImageFit;
 pub const LinkPreviews = Config.LinkPreviews;
+pub const StatusBarPosition = Config.StatusBarPosition;
+pub const StatusBarWidget = Config.StatusBarWidget;
+pub const StatusBarStyle = Config.StatusBarStyle;
 
 // Alternate APIs
 pub const CApi = @import("config/CApi.zig");

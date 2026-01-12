@@ -1005,7 +1005,7 @@ pub const Surface = extern struct {
         token: []const u8,
     ) ?configpkg.StatusBarWidget {
         for (cfg.@"status-bar-widget".value.items) |widget| {
-            const name = if (widget.name) |v| std.mem.span(v) else @tagName(widget.kind);
+            const name: []const u8 = if (widget.name) |v| v else @tagName(widget.kind);
             if (std.mem.eql(u8, name, token)) return widget;
         }
 
@@ -1035,7 +1035,7 @@ pub const Surface = extern struct {
                 return .{ .text = text };
             },
             .cwd => {
-                if (priv.pwd) |pwd| return .{ .text = std.mem.span(pwd) };
+                if (priv.pwd) |pwd| return .{ .text = pwd };
                 return null;
             },
             .size => {
@@ -1057,10 +1057,10 @@ pub const Surface = extern struct {
         buf: []u8,
     ) ?[]const u8 {
         const priv = self.private();
-        const plain = plain: {
-            if (priv.title_override) |v| break :plain std.mem.span(v);
-            if (priv.title) |v| break :plain std.mem.span(v);
-            if (cfg.title) |v| break :plain std.mem.span(v);
+        const plain: []const u8 = plain: {
+            if (priv.title_override) |v| break :plain v;
+            if (priv.title) |v| break :plain v;
+            if (cfg.title) |v| break :plain v;
             break :plain "Ghostty";
         };
 
